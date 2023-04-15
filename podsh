@@ -1,0 +1,136 @@
+#! /usr/bin/env bash
+
+# Check if user's temporal dir exists
+[ -z "${TMPDIR}" ] && TMPDIR="/tmp"
+BUSYBOX_LOCAL="${TMPDIR}/busybox"
+BUSYBOX_REMOTE="/tmp/busybox"
+BUSYBOX_URL="https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"
+BUSYBOX_MD5="ebce43017d2cb316ea45e08374de7315"
+
+print_help() {
+    echo "podsh leverages a busybox shell within distroless containers"
+    echo 
+    echo "Usage: $0 -d <docker_container>">&2
+    echo "       $0 -p <pod_name> -n <namespace>">&2
+    echo
+    echo "   -d <docker_container>           Docker container to get the shell"
+    echo "   -p <pod_name>                   K8s pod name where to get the shell"
+    echo "   -n <namespace>                  K8s namespace where pod belongs. 'Default' namespace used by default"
+    echo
+    exit 1
+}
+
+function get_busybox() {
+    # Download and validate the current busybox version
+    [[ -x "${BUSYBOX_LOCAL}" ]] || (curl -qs "${BUSYBOX_URL}" -o "${BUSYBOX_LOCAL}" && chmod 555 "${BUSYBOX_LOCAL}")
+    # shellcheck disable=SC2086
+    CURRENT_BUSYBOX_MD5="$(md5sum ${BUSYBOX_LOCAL}|cut -d " " -f 1|grep -Eo '^[a-f0-9]+')"
+    [ "${CURRENT_BUSYBOX_MD5}" == "${BUSYBOX_MD5}" ] || exit 1
+}
+	
+function is_qualified_name() {
+    name=$(echo "$1"|grep -E '^[a-zA-Z0-9\._\-]+$')
+    [ -z "${name}" ] && (echo "No qualified name provided"; exit 1)
+}
+
+function get_k8s_namespace() {
+    # Set up the proper namespace_param
+    namespace=$(echo "$1"|grep -E '^[a-zA-Z0-9\._\-]+$')
+    
+    if [ -z "${namespace}" ]; then
+	namespace_param=""
+	echo "Default namespace used"
+    else
+        namespace_param=" -n ${namespace}"
+    fi
+
+    echo "${namespace_param}"
+
+}
+
+function k8s_shell () {
+    # Download busybox if needed
+    get_busybox
+    
+    # set parameters
+    pod="$1"
+    namespace_param=$(get_k8s_namespace "$2")
+
+    # Copy busybox to the remote pod
+    # shellcheck disable=SC2086
+    kubectl cp "${BUSYBOX_LOCAL}" "${pod}":"${BUSYBOX_REMOTE}" ${namespace_param}
+
+    # Install busybox
+    # shellcheck disable=SC2086
+    kubectl exec -ti "${pod}" ${namespace_param} -- "${BUSYBOX_REMOTE}" sh -c "\"${BUSYBOX_REMOTE}\" mkdir /tmp/bin; \"${BUSYBOX_REMOTE}\" --install -s /tmp/bin" && \
+    echo "Busybox installed. Initiating shell on the pod \"${pod}\""
+
+    # Execute the remote shell. If execution was successful, then remove busybox at exit
+    # shellcheck disable=SC2086
+    kubectl exec -ti "${pod}" ${namespace_param} -- "${BUSYBOX_REMOTE}" sh -c "export PATH=$PATH:/tmp/bin; sh" && \
+    echo "Closing shell on pod/${pod}..." && \
+    echo "Do you want to remove the busybox binary? 'y' for removal" && \
+    read -r answer && \
+
+    if [ "${answer}" == "y" ]; then
+        echo "Removing busybox from pod/${pod}"
+        # shellcheck disable=SC2086
+	kubectl exec -ti "${pod}" ${namespace_param} -- "${BUSYBOX_REMOTE}" rm -rf /tmp/bin "${BUSYBOX_REMOTE}" 
+	EXIT_CODE=$?
+        if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "Busybox removed from remote container" 
+        else
+	    echo "Failed"
+	    exit 1
+	fi
+    fi
+} 
+
+function docker_shell () {
+    # Download busybox if needed
+    get_busybox
+    
+    # set parameters
+    container=$1
+    
+    # Copy busybox into the container
+    docker cp "${BUSYBOX_LOCAL}" "${container}":"${BUSYBOX_REMOTE}" 
+
+    # install busybox
+    docker exec -ti "${container}" "${BUSYBOX_REMOTE}" sh -c "${BUSYBOX_REMOTE} mkdir /tmp/bin; ${BUSYBOX_REMOTE} --install -s /tmp/bin" && \
+    echo "Busybox installed. Initiating shell on the container ${container}"
+
+    # Execute the busybox shell
+    docker exec -ti "${container}" "${BUSYBOX_REMOTE}" sh -c "export PATH=$PATH:/tmp/bin; sh" && \
+    echo "Closing shell on pod/${container}..." && \
+    echo "Do you want to remove the busybox binary? 'y' for removal" && \
+    read -r answer && \
+
+    if [ "${answer}" == "y" ]; then
+        echo "Removing busybox from pod/${container}"
+        docker exec -ti "${container}" "${BUSYBOX_REMOTE}" rm -rf /tmp/bin "${BUSYBOX_REMOTE}"
+	EXIT_CODE=$?
+        if [ "$EXIT_CODE" -eq 0 ]; then
+	    echo "Busybox removed from remote container"
+	else
+	    echo "Failed" 
+	    exit 1
+	fi
+    fi
+} 
+
+case "$1" in
+	-d) 
+	    is_qualified_name "$2"	
+	    docker_shell "$2"
+	    ;;
+	-p) 
+            is_qualified_name "$2"
+	    [ -z "$4" ] && [ "$3" != "-n" ] && exit 1
+	    k8s_shell "$2" "$4"
+            ;;
+	*)
+	    print_help
+	    ;;
+esac
+
