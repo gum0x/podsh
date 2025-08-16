@@ -67,7 +67,7 @@ function k8s_shell () {
 
     # Execute the remote shell. If execution was successful, then remove busybox at exit
     # shellcheck disable=SC2086
-    kubectl exec -ti "${pod}" ${namespace_param} -- "${BUSYBOX_REMOTE}" sh -c "export PATH=$PATH:/tmp/bin; sh" && \
+    kubectl exec -ti "${pod}" ${namespace_param} -- "${BUSYBOX_REMOTE}" sh -c 'export PATH=$PATH:/tmp/bin; sh' && \
     echo "Closing shell on pod/${pod}..." && \
     echo "Do you want to remove the busybox binary? 'y' for removal" && \
     read -r answer && \
@@ -101,7 +101,7 @@ function docker_shell () {
     echo "Busybox installed. Initiating shell on the container ${container}"
 
     # Execute the busybox shell
-    docker exec -ti "${container}" "${BUSYBOX_REMOTE}" sh -c "export PATH=$PATH:/tmp/bin; sh" && \
+    docker exec -ti "${container}" "${BUSYBOX_REMOTE}" sh -c 'export PATH=$PATH:/tmp/bin; sh' && \
     echo "Closing shell on pod/${container}..." && \
     echo "Do you want to remove the busybox binary? 'y' for removal" && \
     read -r answer && \
